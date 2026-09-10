@@ -733,6 +733,10 @@ export class HookEventHandler {
    * handler in transcriptParser.ts.
    */
   private markAgentWaiting(agent: AgentState, agentId: number, awaitingInput = false): void {
+    // Единственная точка, через которую агент становится свободным, — здесь же
+    // отпускаем и профильного сотрудника. PostToolUse его больше не гасит: тот
+    // приходит через доли секунды после PreToolUse, и сотрудник только мигал.
+    this.roles?.turnEnd(agentId);
     cancelWaitingTimer(agentId, this.waitingTimers);
     cancelPermissionTimer(agentId, this.permissionTimers);
 

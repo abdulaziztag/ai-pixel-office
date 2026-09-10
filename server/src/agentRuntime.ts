@@ -147,6 +147,7 @@ export class AgentRuntime {
     });
 
     this.roleDirector = new OfficeRoleDirector(store, () => this.officeRolesEnabled.current);
+    this.roleDirector.spawnBaseStaff();
 
     this.hookEventHandler = new HookEventHandler(
       store,

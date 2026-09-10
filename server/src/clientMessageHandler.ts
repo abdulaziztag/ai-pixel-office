@@ -5,6 +5,7 @@ import type { LoadedAssets, LoadedCharacterSprites, LoadedPetSprites } from './a
 import { readConfig, writeConfig } from './configPersistence.js';
 import { HUE_SHIFT_MAX_DEG, PALETTE_COUNT } from './constants.js';
 import { readLayoutFromFile, writeLayoutToFile } from './layoutPersistence.js';
+import { rolesOwnTheOffice } from './officeRoles.js';
 import { claudeProvider } from './providers/index.js';
 
 type WsSend = (message: Record<string, unknown>) => void;
@@ -307,7 +308,11 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   const externalAgents: Record<number, boolean> = {};
   const persistedSeats = adapter?.loadSeats() ?? {};
   const agentMeta: Record<number, { palette?: number; hueShift?: number; seatId?: string }> = {};
-  for (const [id, agent] of store) {
+  // В режиме ролей штат восстанавливает roleDirector.replay(); реальные сессии
+  // своих персонажей не получают (см. onAgentAdded в httpServer), и здесь их
+  // возвращать нельзя — иначе они всплывали бы при каждой перезагрузке страницы.
+  const skipSessionCharacters = rolesOwnTheOffice(runtime);
+  for (const [id, agent] of skipSessionCharacters ? [] : store) {
     agentIds.push(id);
     if (agent.folderName) {
       folderNames[id] = agent.folderName;

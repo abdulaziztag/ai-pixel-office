@@ -154,6 +154,10 @@ export function useExtensionMessages(
   // agentToolsClear must NOT remove them — despawning and re-creating moved the
   // character to a new tile every turn. Cleared by subagentClear/agentClosed.
   const backgroundParentToolIdsRef = useRef<Record<number, Set<string>>>({});
+  /** Кто хоть раз брался за работу. Галочка и звонок означают «задача сделана»,
+   *  поэтому сотруднику, который ещё ничего не делал, они не полагаются: иначе
+   *  офис звенит на старте и при каждой перезагрузке страницы. */
+  const everWorkedRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     // Buffer agents from existingAgents until layout is loaded
@@ -472,7 +476,8 @@ export function useExtensionMessages(
           return { ...prev, [id]: status };
         });
         os.setAgentActive(id, status === 'active');
-        if (status === 'waiting') {
+        if (status === 'active') everWorkedRef.current.add(id);
+        if (status === 'waiting' && everWorkedRef.current.has(id)) {
           os.showWaitingBubble(id, msg.awaitingInput === true);
           playDoneSound();
         }

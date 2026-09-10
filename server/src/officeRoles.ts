@@ -25,14 +25,39 @@ export const OFFICE_ROLES: readonly OfficeRole[] = [
     palette: 1,
     tools: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'],
   },
+  // Роль по умолчанию: всё, что не забрал Секретарь. Список инструментов пуст
+  // намеренно — перечислять их поимённо значит ловить каждый новый инструмент
+  // Claude, а нераспознанный инструмент оставлял бы офис без движения.
+  {
+    key: 'assistant',
+    name: 'Ассистент',
+    palette: 0,
+    tools: [],
+  },
 ];
+
+/**
+ * Отдан ли офис ролям целиком — то есть можно ли прятать персонажа самой сессии.
+ *
+ * Роли оживают только от хуков: разбор JSONL до них не дотягивается. С
+ * выключенными хуками спрятанная сессия оставила бы офис неподвижным, поэтому
+ * там показываем её персонажа по-старому — рядом со штатом.
+ */
+export function rolesOwnTheOffice(runtime?: {
+  officeRolesEnabled: { current: boolean };
+  hooksEnabled: { current: boolean };
+}): boolean {
+  return runtime?.officeRolesEnabled.current === true && runtime.hooksEnabled.current === true;
+}
 
 const ROLE_BY_TOOL = new Map<string, OfficeRole>(
   OFFICE_ROLES.flatMap((role) => role.tools.map((tool) => [tool, role] as [string, OfficeRole])),
 );
 
+const DEFAULT_ROLE = OFFICE_ROLES.find((role) => role.key === 'assistant');
+
 export function roleForTool(toolName: string): OfficeRole | undefined {
-  return ROLE_BY_TOOL.get(toolName);
+  return ROLE_BY_TOOL.get(toolName) ?? DEFAULT_ROLE;
 }
 
 /**
@@ -66,6 +91,8 @@ export interface OfficeEmployee {
 export class OfficeRoleDirector {
   private spawned = new Map<string, number>();
   private activeByAgent = new Map<number, ActiveRoleTool>();
+  /** Какая роль сейчас держит ход этой сессии — она остаётся занятой между инструментами. */
+  private busyRoleByAgent = new Map<number, number>();
   private employees = new Map<string, OfficeEmployee>();
   private activeSubagentByAgent = new Map<number, ActiveRoleTool>();
   private toolSeq = 0;
@@ -74,6 +101,17 @@ export class OfficeRoleDirector {
     private store: AgentStateStore,
     private enabled: () => boolean,
   ) {}
+
+  /**
+   * Постоянный штат: двое на местах с первой секунды, ещё до любой сессии.
+   * Раньше роль заводилась лениво, первым же подходящим инструментом, — и офис
+   * стоял пустым, пока Claude ничего не делал. Сотрудник, которого не видно в
+   * простое, выглядит уволенным, а не отдыхающим.
+   */
+  spawnBaseStaff(): void {
+    if (!this.enabled()) return;
+    for (const role of OFFICE_ROLES) this.ensureRoleAgent(role);
+  }
 
   /** Роли живут в офисе, пока идёт сессия; после перезагрузки страницы их надо вернуть. */
   replay(): void {
@@ -176,6 +214,15 @@ export class OfficeRoleDirector {
     this.toolEnd(ownerAgentId);
 
     const roleAgentId = this.ensureRoleAgent(role);
+
+    // Работа перешла к другой роли — прежняя освобождается. Пока ход не кончился,
+    // сотрудник со своего места не встаёт: между инструментами он «думает».
+    const previous = this.busyRoleByAgent.get(ownerAgentId);
+    if (previous !== undefined && previous !== roleAgentId) {
+      this.store.broadcast({ type: 'agentStatus', id: previous, status: 'waiting' });
+    }
+    this.busyRoleByAgent.set(ownerAgentId, roleAgentId);
+
     const toolId = `role-${role.key}-${++this.toolSeq}`;
     this.activeByAgent.set(ownerAgentId, { roleAgentId, toolId });
     this.store.broadcast({
@@ -185,13 +232,15 @@ export class OfficeRoleDirector {
       status,
       toolName,
     });
-    // Без смены состояния персонаж навсегда остаётся «занятым»: он не встанет
-    // из-за стола и не пойдёт отдыхать, когда работа кончится.
     this.store.broadcast({ type: 'agentStatus', id: roleAgentId, status: 'active' });
     return true;
   }
 
-  /** Инструмент закончился — сотрудник возвращается к безделью за своим столом. */
+  /**
+   * Инструмент отработал. Статус здесь НЕ сбрасывается: PostToolUse приходит через
+   * доли секунды после PreToolUse, и сотрудник, свободневший на каждом инструменте,
+   * мигал вместо того чтобы работать. Свободным он становится в конце хода — turnEnd.
+   */
   toolEnd(ownerAgentId: number): void {
     const active = this.activeByAgent.get(ownerAgentId);
     if (!active) return;
@@ -201,12 +250,20 @@ export class OfficeRoleDirector {
       id: active.roleAgentId,
       toolId: active.toolId,
     });
-    this.store.broadcast({ type: 'agentStatus', id: active.roleAgentId, status: 'waiting' });
+  }
+
+  /** Ход закончился — сотрудник освобождается и может пойти по своим делам. */
+  turnEnd(ownerAgentId: number): void {
+    this.toolEnd(ownerAgentId);
+    const busy = this.busyRoleByAgent.get(ownerAgentId);
+    if (busy === undefined) return;
+    this.busyRoleByAgent.delete(ownerAgentId);
+    this.store.broadcast({ type: 'agentStatus', id: busy, status: 'waiting' });
   }
 
   /** Сессия закончилась: гасим её незакрытый инструмент, персонажи остаются на местах. */
   sessionEnd(ownerAgentId: number): void {
-    this.toolEnd(ownerAgentId);
+    this.turnEnd(ownerAgentId);
   }
 
   /** Убрать сотрудников из офиса целиком (выключение режима ролей). */
@@ -244,5 +301,9 @@ export class OfficeRoleDirector {
       id,
       agentName: role.name,
     });
+    // Без явного статуса персонаж считается занятым: садится за стол и остаётся
+    // там с подписью «Думает», хотя работы нет. Свободный сотрудник должен
+    // встать и пойти по своим делам — за этим и заведены занятия в простое.
+    this.store.broadcast({ type: 'agentStatus', id, status: 'waiting' });
   }
 }

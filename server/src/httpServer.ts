@@ -15,6 +15,7 @@ import type {
 import { handleClientMessage } from './clientMessageHandler.js';
 import { HOOK_API_PREFIX, MAX_HOOK_BODY_SIZE } from './constants.js';
 import { findHireableRole, HIREABLE_ROLES, hireEmployee, listHiredKeys } from './hiring.js';
+import { rolesOwnTheOffice } from './officeRoles.js';
 import type { AgentState } from './types.js';
 
 /** Options for creating the HTTP + WebSocket server. */
@@ -207,6 +208,11 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
 
     // Pipe store events to WebSocket client
     const onAgentAdded = (id: number, agent: AgentState) => {
+      // В режиме ролей персонажи офиса — это штат: роли и нанятые сотрудники.
+      // Сессия их оживляет, но собственного персонажа не получает, иначе рядом
+      // с Ассистентом встал бы его безымянный двойник, который к тому же
+      // исчезает вместе с сессией.
+      if (rolesOwnTheOffice(options.runtime)) return;
       safeSend(socket, {
         type: 'agentCreated',
         id,
@@ -223,6 +229,7 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
     };
 
     const onAgentRemoved = (id: number) => {
+      if (rolesOwnTheOffice(options.runtime)) return;
       safeSend(socket, { type: 'agentClosed', id });
     };
 
